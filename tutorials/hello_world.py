@@ -94,6 +94,17 @@ print(f"  First 8 values: {activation[:8].float().cpu().numpy().round(3)}")
 
 activation_np = activation.float().cpu().numpy()
 
+# Invariant from CLAUDE.md / stage0: the NLA was trained only on token
+# positions >= 50 ("earlier positions decode to noise"). A short sentence's
+# last-token activation is OUT OF DISTRIBUTION and may decode poorly — fine
+# for a "does the pipeline run" smoke test, not a quality benchmark.
+resolved_idx = args.token_index if args.token_index >= 0 else len(tokens) + args.token_index
+if resolved_idx < 50:
+    print(f"  NOTE: token position {resolved_idx} < 50. The NLA trains on")
+    print("        positions >= 50; expect a noisy/generic decode here.")
+    print("        For a good decode, use a longer passage (--sentence) and")
+    print("        a later --token-index.")
+
 # Free Qwen before loading the NLA models (not strictly needed on 80GB, but tidy)
 del model
 torch.cuda.empty_cache()
