@@ -32,14 +32,19 @@ fi
 #    NOTE: pin torch to cu124 to avoid sgl-kernel cu12/cu13 conflict
 # -----------------------------------------------------------------------------
 echo ""
-echo "[1] Installing dependencies (from docs/setup.md)..."
+echo "[1] Installing dependencies (same packages as docs/setup.md)..."
+# docs/setup.md uses `uv pip install`, which assumes an ACTIVE venv/conda env.
+# A fresh RunPod pod has no active venv, so `uv pip` would error
+# ("No virtual environment found"). Plain `pip` installs the identical
+# packages into the pod's system Python — the docs note plain pip works
+# everywhere uv pip does. Same packages, same cu124 torch pin.
 
-pip install -q uv  # install uv if not present
+pip install -q --upgrade pip
 
-uv pip install torch transformers safetensors httpx orjson pyyaml numpy \
+pip install -q torch transformers safetensors httpx orjson pyyaml numpy \
     --index-url https://download.pytorch.org/whl/cu124
 
-uv pip install "sglang[all]>=0.5.6"
+pip install -q "sglang[all]>=0.5.6"
 
 echo "    Done."
 
