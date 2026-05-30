@@ -12,6 +12,12 @@
 #
 # Prerequisite: ACTOR_SFT_CKPT and CRITIC_SL_CKPT must both have nla_meta.yaml
 # with matching token IDs / prompt templates.
+#
+# Defaults reproduce the released Qwen2.5-7B run: 128 prompts/rollout x 8
+# samples/prompt = 1024-sample global batch, lr 1.41e-5, KL loss coef 0.01,
+# 150-token response cap. See TRAINING_NOTES.md "Production run" for the full
+# table and how these relate to the values recorded in the released
+# checkpoints' nla_meta.yaml sidecars.
 
 : "${RL_PARQUET:?set RL_PARQUET to the Stage 3c parquet path}"
 : "${INSTRUCT_MODEL:?HF base instruct model (e.g. Qwen/Qwen2.5-7B-Instruct) — supplies tokenizer/config}"
@@ -58,7 +64,7 @@ ${PYTHON:-python} train.py \
     --loss-type policy_loss \
     --advantage-estimator grpo \
     --force-use-critic \
-    --n-samples-per-prompt 4 \
+    --n-samples-per-prompt 8 \
     --rollout-function-path miles.rollout.sglang_rollout.generate_rollout \
     --custom-generate-function-path nla.rollout.nla_generate.generate \
     --custom-rm-path nla.reward.nla_rm \
@@ -72,7 +78,7 @@ ${PYTHON:-python} train.py \
     --save "$RUN_DIR/actor" \
     --critic-load "$CRITIC_SL_CKPT" \
     --critic-save "$RUN_DIR/critic" \
-    --critic-lr "${CRITIC_LR:-1e-5}" \
+    --critic-lr "${CRITIC_LR:-1.41e-5}" \
     --actor-num-nodes "$ACTOR_NODES" \
     --actor-num-gpus-per-node "$ACTOR_GPUS" \
     --critic-num-nodes "$CRITIC_NODES" \
@@ -94,9 +100,9 @@ ${PYTHON:-python} train.py \
     --router-disable-circuit-breaker \
     --router-retry-max-backoff-ms 500 --router-retry-max-retries 2 \
     --rollout-batch-size 128 \
-    --global-batch-size 512 \
+    --global-batch-size 1024 \
     --micro-batch-size "${ACTOR_MICRO:-4}" \
-    --lr "${ACTOR_LR:-1e-6}" --lr-decay-style constant \
+    --lr "${ACTOR_LR:-1.41e-5}" --lr-decay-style constant \
     "${KL_FLAGS[@]}" \
     --save-interval "${SAVE_INTERVAL:-100}" \
     --loss-mask-type "${LOSS_MASK_TYPE:-qwen}" \
