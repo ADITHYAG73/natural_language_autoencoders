@@ -290,7 +290,7 @@ python train.py \
     --ref-load $ACTOR_SFT_CKPT \                 # SFT'd actor, NOT base model
     --critic-load $CRITIC_SL_CKPT \              # SL-trained critic checkpoint — critic RayTrainGroup starts here
     --critic-save $RUN_DIR/critic \
-    --critic-lr 1e-5 \
+    --critic-lr 1.41e-5 \
     --critic-num-nodes $CRITIC_NODES --critic-num-gpus-per-node $CRITIC_GPUS \  # may differ from actor dp; _repartition_for_critic handles it
     --save-interval 10 \
     ...

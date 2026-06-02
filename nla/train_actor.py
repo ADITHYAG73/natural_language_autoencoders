@@ -334,6 +334,32 @@ class NLAFSDPActor(FSDPTrainRayActor):
                 f"don't want KL."
             )
 
+        # Train/sample consistency guard. All released NLA runs train with
+        # exactly ONE optimizer step per rollout (global batch == rollout
+        # samples) — we have not tested anything else. A --global-batch-size
+        # that doesn't equal rollout_batch_size × n_samples_per_prompt does NOT
+        # give you more/fewer steps here (_train_core forces one step via the
+        # dynamic_global_batch_size override), but Miles' loss wrapper still
+        # normalizes by global_batch_size, so a mismatch silently rescales
+        # gradients instead. Refuse to start rather than do either silently.
+        if role == "actor" and args.loss_type == "policy_loss":
+            rollout_samples = args.rollout_batch_size * args.n_samples_per_prompt
+            if rollout_samples != args.global_batch_size:
+                assert os.environ.get("NLA_I_KNOW_WHAT_IM_DOING") == "1", (
+                    f"--rollout-batch-size {args.rollout_batch_size} × "
+                    f"--n-samples-per-prompt {args.n_samples_per_prompt} = "
+                    f"{rollout_samples} samples per rollout, but "
+                    f"--global-batch-size is {args.global_batch_size}. NLA training "
+                    f"has only been tested with one optimizer step per rollout "
+                    f"(global batch == rollout samples). This mismatch would not "
+                    f"actually change the step count — the FSDP path forces one "
+                    f"step per rollout — but the loss is normalized by "
+                    f"global_batch_size, so it silently scales gradients by "
+                    f"{rollout_samples / args.global_batch_size:g}× instead. Make "
+                    f"the two equal, or set NLA_I_KNOW_WHAT_IM_DOING=1 if you are "
+                    f"deliberately running an untested configuration."
+                )
+
         if role == "critic" and args.force_use_critic:
             actor_dp = args.actor_num_nodes * args.actor_num_gpus_per_node
             critic_dp = args.critic_num_nodes * args.critic_num_gpus_per_node

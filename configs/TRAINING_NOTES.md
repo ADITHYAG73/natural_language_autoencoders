@@ -177,11 +177,64 @@ your LR is >2× off the sqrt-scaled recommendation.
 
 (This Qwen-only scan informed our choice; we did not systematically sweep across models.)
 
-**Lesson**: actor LR was the original bottleneck. 10× higher actor LR + 5× critic works.
-Higher critic LR makes critic reward longer responses → actor learns length → OOM risk.
+**Lesson**: actor LR was the original bottleneck — raising it 10× from the mismatched
+baseline is what mattered. Read the scan's apparent win for higher critic LRs with
+suspicion: a 30-step horizon unduly advantages a fast-learning critic (quick FVE gains
+that don't necessarily hold up over a full run), and a hotter critic also rewards
+verbosity → actor learns length → OOM risk. In practice we ran actor and critic LR at
+parity for most of training.
 
-**Convergence**: fve_nrm saturates at ~0.64 by step ~150 with winner config (production run).
-Remaining 1800 steps give marginal gains — consider cosine LR decay to squeeze more.
+## Production run — the released Qwen2.5-7B checkpoints
+
+The released [`kitft/nla-qwen2.5-7b-L20-av`](https://huggingface.co/kitft/nla-qwen2.5-7b-L20-av) /
+[`-ar`](https://huggingface.co/kitft/nla-qwen2.5-7b-L20-ar) pair came from a 2×8×H100 run — the
+LR-scan winner above scaled up by the √(batch) rule (×√2 for 512 → 1024):
+
+| | LR-scan config (above) | production run (released) |
+|---|---|---|
+| prompts/rollout | 64 | 128 |
+| samples/prompt (GRPO group) | 8 | 8 |
+| global batch (samples) | 512 | 1024 |
+| actor (AV) lr | 1e-5 | 1.41e-5 (= 1e-5 × √2) |
+| critic (AR) lr | 5e-5 | 1.41e-5 (parity with actor)† |
+| KL loss (`--use-kl-loss --kl-loss-coef`) | — | 0.01 |
+| response cap | 150 tok (truncated → reward −2) | same |
+| saved at | — | `rollout_id: 4199` (sidecar) |
+| final fve_nrm | — | 0.752 |
+
+† For most of training. The released AR sidecar records `lr: 7.07e-5` at save time
+(the √2-scaled scan winner); we regard the scan's preference for higher critic LRs as
+a short-horizon artifact (see Lesson above) and ran at parity. The `training:` block
+in each released checkpoint's `nla_meta.yaml` records what was in effect at save time.
+
+`configs/rl.sh` defaults now ship this configuration: parity LRs at **1.41e-5**,
+1024-sample global batch, KL loss coef **0.01**.
+
+**Reading the paper appendix against this table**: the paper's "batch size of 128" is
+prompts per step (× G=8 samples = the 1024-sample global batch here), and its
+"learning rate of 10⁻⁵" is the parity LR rounded from 1.41e-5; the KL coefficient is
+the value above.
+
+**Tuning headroom**: throughput knobs (micro-batch size, attention implementation,
+dynamic batching) were not profiled carefully and are not optimised for any particular
+hardware — not even the H100s we ran on. Worth tuning for your setup; they affect step
+time, not the training math.
+
+**Keep training on-policy**: `configs/rl.sh` uses Miles' synchronous `train.py` —
+generate → train → sync weights to SGLang, every step, with each rollout consumed in
+exactly one optimizer step (128 × 8 = 1024 = global batch). **This is the only
+configuration we have tested**; all released checkpoints were trained this way. Two
+specific cautions:
+
+- **One step per rollout**: `NLAFSDPActor` refuses to start when
+  `rollout_batch_size × n_samples_per_prompt != global_batch_size`; set
+  `NLA_I_KNOW_WHAT_IM_DOING=1` to bypass. The mismatch wouldn't actually change the
+  step count (the FSDP path forces one step per rollout) — but the loss normalizer
+  divides by `global_batch_size`, so it silently rescales gradients instead.
+- **No overlapped generation/training**: with Miles' `train_async.py`, rollout N+1 is
+  generated while rollout N trains, so samples come from slightly stale weights. In
+  our experience this train/sample mismatch can hurt training, but we have not
+  investigated it carefully. Stick with `train.py` unless you know what you're doing.
 
 ## RL infrastructure notes
 
