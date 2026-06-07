@@ -250,13 +250,39 @@ CUDA 13.0 driver. Repos: `kitft/nla-gemma3-12b-L32-av` + `-ar`, base
   `m.model.language_model.layers`, NOT `m.model.layers` (matters for steering
   hooks; `tutorials/steer.py` resolves this).
 
-### 6. Running the three tutorials (server up first)
+### 6. End-to-end from a fresh pod (copy-paste, in order)
+Deploy: ≥40 GB GPU, **100 GB disk**, passphrase-less SSH key on the account.
 ```bash
-bash tutorials/launch_av.sh                       # AV server (triton, mem 0.35)
-# second terminal, env exported + hf auth login done:
-python tutorials/round_trip.py "your 60+ token passage"   # AV→AR→(mse,cos)
-python tutorials/steer.py --concept "cheese and dairy"     # AR-vector surgery
+# --- 0. clone (your fork) ---
+cd /workspace && git clone https://github.com/ADITHYAG73/natural_language_autoencoders.git
+cd natural_language_autoencoders
+
+# --- 1. env (run in EVERY terminal you open) ---
+export HF_HOME=/workspace/hf
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_ENABLE_HF_TRANSFER=0
+export HF_HUB_DOWNLOAD_TIMEOUT=60
+export TORCH_CUDA_ARCH_LIST="12.0+PTX"
+
+# --- 2. deps (Gemma path: KEEP transformers 5.3.0) ---
+pip install --break-system-packages --no-cache-dir \
+    safetensors httpx orjson pyyaml numpy pyarrow huggingface_hub
+pip install --break-system-packages --no-cache-dir torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+pip install --break-system-packages --no-cache-dir "sglang[all]==0.5.10.post1"   # pins transformers==5.3.0 — leave it
+# the return_dict=False patch to nla_inference.py is ALREADY committed in the fork.
+
+# --- 3. gated base model: accept license on HF, make a Read token, then ---
+hf auth login        # paste token; "add as git credential?" -> n   (caches to /workspace/hf/token)
+
+# --- 4. launch AV server (terminal 1; keep it open) ---
+bash tutorials/launch_av.sh        # triton backend, mem-fraction 0.35
+
+# --- 5. run the tutorials (terminal 2; re-do step 1 exports here) ---
+python tutorials/round_trip.py "a 60+ token passage so positions are >=50"   # AV→AR→(mse,cos)
+python tutorials/steer.py --concept "cheese and dairy"                        # AR-vector surgery
 ```
+Big downloads (base ~24 GB, AV ~24 GB, AR ~16 GB) happen on first use; if a TLS
+timeout hits, re-run (resumes) or pre-fetch: `hf download kitft/nla-gemma3-12b-L32-ar`.
 
 ### Network flakiness (this pod had intermittent egress)
 - TLS/read timeouts mid-download: re-run, `snapshot_download` resumes. Bump
