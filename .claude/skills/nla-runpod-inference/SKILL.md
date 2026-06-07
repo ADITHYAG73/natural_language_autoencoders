@@ -5,7 +5,9 @@ description: >
   RunPod GPU pod — AV (vector→text) and AR (text→vector). Captures every blocker we
   hit and beat: Blackwell/CUDA pinning, sglang version vs torch, transformers v4-vs-v5,
   flashinfer-on-sm120, hf-xet/hf_transfer download failures, and the small-disk model
-  juggle. Use this whenever spinning up a pod to run kitft/nla-* checkpoints.
+  juggle. Covers BOTH Qwen2.5 (transformers<5) AND Gemma-3 (transformers 5.3.0 +
+  return_dict patch + triton-not-fa3 + gated token) — see the Gemma-3 section.
+  Use this whenever spinning up a pod to run kitft/nla-* checkpoints.
 ---
 
 # NLA inference on RunPod — battle-tested recipe
@@ -72,12 +74,20 @@ pip install --break-system-packages --no-cache-dir \
 # newest sglang that still rides torch 2.9.1 (0.5.11+ demand torch 2.11)
 pip install --break-system-packages --no-cache-dir "sglang[all]==0.5.10.post1"
 
-# CRITICAL: sglang pulls transformers 5.x, but nla_inference.py needs 4.x
+# CRITICAL (QWEN ONLY): sglang pulls transformers 5.x, but nla_inference.py needs 4.x
 # (transformers 5.x apply_chat_template(tokenize=True) returns a BatchEncoding,
 #  not list[int] → injection marker scan finds 0 matches → AssertionError).
 # sglang 0.5.10 STILL WORKS on 4.57.6 for plain Qwen2, so just downgrade:
 pip install --break-system-packages --no-cache-dir "transformers<5"
 ```
+
+> ⚠️ **GEMMA-3 IS THE OPPOSITE — DO NOT DOWNGRADE.** Gemma-3 in sglang
+> 0.5.10.post1 needs `config.rope_parameters`, which only exists in
+> **transformers 5.x** (4.x has `rope_scaling`). sglang 0.5.10.post1 in fact
+> *hard-pins* `transformers==5.3.0`. So for Gemma you **keep 5.3.0** and instead
+> patch `nla_inference.py` (one-liner, below). Qwen wants 4.x, Gemma wants 5.3.0
+> — they are mutually exclusive in one env. See the **Gemma-3 section** for the
+> full recipe; if you're doing Gemma, skip the `transformers<5` line entirely.
 
 Verify torch survived and sees the GPU:
 ```bash
@@ -183,6 +193,85 @@ Needs the AR model on disk too — so this is where the bigger disk really pays 
 
 ---
 
+## Gemma-3 (e.g. gemma3-12b-L32) — full recipe, verified 2026-06-07
+
+Gemma differs from Qwen in **five** ways that each cost time the first run. The
+working scripts are committed in the repo: `tutorials/launch_av.sh`,
+`tutorials/round_trip.py`, `tutorials/steer.py`. Verified end-to-end on RTX PRO
+6000 Blackwell (sm120): reproduced the planning finding (AV reads "expecting
+'XVI'" at ` Louis`) with AR reconstruction **cos≈0.997**.
+
+**Proven Gemma stack:** torch **2.9.1+cu128**, sglang **0.5.10.post1**,
+**transformers 5.3.0** (NOT <5 — opposite of Qwen), triton attention backend,
+CUDA 13.0 driver. Repos: `kitft/nla-gemma3-12b-L32-av` + `-ar`, base
+`google/gemma-3-12b-it`.
+
+### 1. transformers 5.3.0 + a 1-line patch (the headline gotcha)
+- sglang 0.5.10.post1 **hard-pins `transformers==5.3.0`**; Gemma-3 needs its
+  `rope_parameters` attr. Symptom if you downgraded: `'Gemma3TextConfig' object
+  has no attribute 'rope_parameters'` at model load.
+- But on 5.x, `tokenizer.apply_chat_template(tokenize=True)` returns a
+  `BatchEncoding`, not `list[int]` → `nla_inference.py`'s marker scan finds 0
+  matches → `injection token appears 0× ` assert. **Fix:** add
+  `return_dict=False` to the two `apply_chat_template(..., tokenize=True, ...)`
+  calls in `nla_inference.py` (lines ~189, ~405). Already committed to the fork;
+  if on a fresh clone: `sed -i 's/tokenize=True, add_generation_prompt=True,/&  return_dict=False,/g' nla_inference.py` (then sanity-check it hit exactly 2 lines).
+
+### 2. Attention backend: triton, NOT fa3 (on Blackwell)
+- `docs/setup.md` says Gemma needs `--attention-backend fa3`. **fa3 only
+  supports SM 80–90** (Ampere/Hopper) → on Blackwell sm120 it asserts
+  `FlashAttention v3 Backend requires SM>=80 and SM<=90`.
+- Use `--attention-backend triton --sampling-backend pytorch`. Correct for NLA
+  because prompts are short — Gemma's sliding-window == full attention when the
+  window covers the whole sequence (sglang also auto-disables hybrid-SWA).
+- On a real Hopper/Ampere card, use `fa3` as the docs say.
+
+### 3. Gated base model — token required
+- `google/gemma-3-12b-it` is gated. Accept the license at its HF page, make a
+  **Read** token, then on the pod (with `HF_HOME` set so it caches to the big
+  disk): `export HF_HOME=/workspace/hf && hf auth login` (paste token, "add as
+  git credential? n"). Caches to `/workspace/hf/token`; all later calls pick it
+  up. The `kitft/*` AV/AR repos are public (no token needed).
+
+### 4. VRAM: shrink the server so base+AR fit alongside
+- Default `--mem-fraction-static 0.8` grabbed ~78 GB (mostly KV cache you don't
+  need for tiny prompts), leaving too little for the 24 GB base model. Use
+  **`--mem-fraction-static 0.35`** (~34 GB) — leaves ~60 GB for base (24) + AR
+  (16) loaded in-process for extraction/scoring. (97 GB card.)
+
+### 5. Sidecar values + misc
+- Gemma sidecar: `d_model=3840`, `inj_scale=80000.0`, **`embed_scale=61.97`
+  (=√d, Gemma multiplies embeddings by √d — Qwen is 1.0)**, `inj_char='㈜'`
+  (id 246566). All auto-loaded; never hardcode.
+- `model.norm.weight | MISSING → newly initialized` when loading the AR is
+  **expected** — the critic replaces the final LayerNorm with Identity
+  (`nla/models.py`), so that weight is intentionally absent.
+- Multimodal nesting: base gemma-3-it decoder layers are at
+  `m.model.language_model.layers`, NOT `m.model.layers` (matters for steering
+  hooks; `tutorials/steer.py` resolves this).
+
+### 6. Running the three tutorials (server up first)
+```bash
+bash tutorials/launch_av.sh                       # AV server (triton, mem 0.35)
+# second terminal, env exported + hf auth login done:
+python tutorials/round_trip.py "your 60+ token passage"   # AV→AR→(mse,cos)
+python tutorials/steer.py --concept "cheese and dairy"     # AR-vector surgery
+```
+
+### Network flakiness (this pod had intermittent egress)
+- TLS/read timeouts mid-download: re-run, `snapshot_download` resumes. Bump
+  `export HF_HUB_DOWNLOAD_TIMEOUT=60`. For big repos, pre-fetch with
+  `hf download <repo>` (resumes per-file) until clean, *then* run the script.
+
+### Driving the pod from a laptop / agent
+- The `ssh.runpod.io` **proxy only allows interactive sessions** (one-shot
+  `ssh ... "cmd"` → "doesn't support PTY"). For non-interactive/automation use
+  **direct TCP**: `ssh root@<ip> -p <port> -i <key>`. Backgrounding a process
+  over a one-shot SSH (`&`) tears the channel down (exit 255) — instead write a
+  launcher script and run the long-lived server in an interactive terminal.
+
+---
+
 ## Key facts (don't rederive these)
 
 | Thing | Value | Note |
@@ -219,6 +308,20 @@ Needs the AR model on disk too — so this is where the bigger disk really pays 
 - `Unrecognized model in ..` → empty checkpoint path. You inlined `VAR=$(...) python`;
   run the assignment on its own line first.
 - `externally-managed-environment` (PEP 668) → add `--break-system-packages`.
+- `'Gemma3TextConfig' object has no attribute 'rope_parameters'` (Gemma load) →
+  transformers too old. `pip install "transformers==5.3.0"` (what sglang
+  0.5.10.post1 pins). Do NOT downgrade to <5 for Gemma.
+- `injection token appears 0×` on Gemma with transformers 5.x → add
+  `return_dict=False` to the two `apply_chat_template(tokenize=True,...)` calls
+  in `nla_inference.py` (5.x returns BatchEncoding, not list[int]).
+- `FlashAttention v3 Backend requires SM>=80 and SM<=90` (Blackwell + `--attention-backend fa3`)
+  → use `--attention-backend triton --sampling-backend pytorch` instead.
+- `'Gemma3Model' object has no attribute 'layers'` (forward hook on base gemma-it)
+  → multimodal nesting; layers are at `model.language_model.layers`.
+- `401/403` or "gated" on `google/gemma-3-12b-it` → accept the license on HF +
+  `hf auth login` with `HF_HOME` exported first.
+- `Your SSH client doesn't support PTY` / exit 255 on one-shot `ssh ... "cmd"`
+  via `ssh.runpod.io` → proxy is interactive-only; use direct TCP `ssh root@<ip> -p <port>`.
 
 ---
 
@@ -231,3 +334,16 @@ Needs the AR model on disk too — so this is where the bigger disk really pays 
 - Verified against: HF env-vars docs, sglang install docs (CUDA-12 path),
   sgl-project/sglang issues #24633 #15342 (Blackwell triton), huggingface_hub #3266 /
   xet-core #483 (xet disable).
+
+## What we used (2026-06-07 session — Gemma-3, for reference)
+- Pod: RTX PRO 6000 Blackwell (sm120, 97 GB VRAM), 188 GB RAM, 16 vCPU, **100 GB
+  container disk + 100 GB network volume** (the bigger disk made it painless —
+  no juggling, base+AV+AR all resident). Driver 580.159.03 / CUDA 13.0.
+- Final working stack: torch 2.9.1+cu128, sglang 0.5.10.post1 (**triton**
+  backend), **transformers 5.3.0** (+ `return_dict=False` patch to
+  nla_inference.py), CUDA 13.0 driver.
+- Ran AV smoke (Level 1) → full AV→AR round-trip (`tutorials/round_trip.py`,
+  cos≈0.997, reproduced planning) → AR-vector steering (`tutorials/steer.py`).
+- Verified against: `docs/setup.md` (gated models §, Gemma fa3 note),
+  sglang attention_registry (fa3 SM 80–90 assert), transformers 5.3.0
+  apply_chat_template return-type change.
