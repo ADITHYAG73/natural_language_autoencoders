@@ -1,5 +1,5 @@
 # NLA datagen — Qwen2.5-7B over Ultra-FineWeb (100k docs).
-# ~1M activation vectors (100k × 10), split 25/25/50 → 250k AO / 250k AR / 500k RL.
+# ~1M activation vectors (100k × 10), split 25/25/50 → 250k AV / 250k AR / 500k RL.
 #
 # Ultra-FineWeb is a quality-filtered fineweb subset — higher signal than vanilla fineweb.
 #

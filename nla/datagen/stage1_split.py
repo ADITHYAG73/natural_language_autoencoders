@@ -2,7 +2,7 @@
 
 Partition at the DOCUMENT level (by doc_id), not the row level. Stage 0
 samples ~N positions per document; row-level split would leak the same
-document's context across AO/AR/RL subsets, contaminating the SL ↔ RL
+document's context across AV/AR/RL subsets, contaminating the SL ↔ RL
 boundary.
 """
 

@@ -63,7 +63,7 @@ def main() -> None:
 
     print(f"reading prior shuf from {args.prior_shuf}...")
     prior_pf = pq.ParquetFile(prior_storage.open_read(args.prior_shuf))
-    # stage3's AO writes `response`, AR writes `prompt` — presence discriminates.
+    # stage3's AV writes `response`, AR writes `prompt` — presence discriminates.
     is_ao = "response" in prior_pf.schema_arrow.names
     wrapped_col = "response" if is_ao else "prompt"
     print(f"  detected {'AV-SFT (response col)' if is_ao else 'AR-SFT (prompt col, critic template unwrap)'}")
