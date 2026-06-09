@@ -184,7 +184,7 @@ class NLADataSource(RolloutDataSource):
         """Fire-and-forget GCS sync of rollout_dumps/ — same env-var gating
         as NLAFSDPActor._maybe_background_push. Runs at checkpoint intervals
         (RolloutManager.save → data_source.save). Storage backend is pluggable
-        via NLA_BACKUP_STORAGE_CLS so no internal code paths leak here."""
+        via NLA_BACKUP_STORAGE_CLS."""
         remote = os.environ.get("NLA_BACKUP_REMOTE")
         storage_cls = os.environ.get("NLA_BACKUP_STORAGE_CLS")
         dump_template = self.args.save_debug_rollout_data

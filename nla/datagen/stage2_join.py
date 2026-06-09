@@ -4,7 +4,7 @@ When a regeneration uses the SAME (corpus, seed, tokenizer) as a prior run,
 stage1's raw parquet contains the identical set of (doc_id, position) pairs.
 A prior run's shuf parquet has response/prompt for those pairs. Join on the
 key, unwrap the explanation, append — no text hashing, no API calls, no per-
-chunk write overhead. Qwen 100k v2: 99.57% match, ~1min vs ~49min for
+chunk write overhead. Measured on a Qwen 100k regeneration: 99.57% match, ~1min vs ~49min for
 cache-hit stage2 (which was bottlenecked on 489 row-group writes).
 
 This is stage2's complement, not its replacement:

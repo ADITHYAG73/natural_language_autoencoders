@@ -449,7 +449,7 @@ class NLAFSDPActor(FSDPTrainRayActor):
         # post-forward reshard hook. All-gather buffers from the recompute
         # stay alive through the rest of backward. At 62 layers × 826MB
         # (27b) = 51GB pileup. 74GB OOM at rollout 1 once adam state lands.
-        # Memory snapshot 2026-03-13: 54 × 826MB foreach_all_gather at OOM,
+        # Memory snapshot at the OOM: 54 × 826MB foreach_all_gather,
         # post-forward only 17GB (FWDMEM hook) → backward-only pileup.
         # Standalone FSDP test WITHOUT grad-ckpt → 10.64GB → confirms.
         #
@@ -553,7 +553,7 @@ class NLAFSDPActor(FSDPTrainRayActor):
         model_args = super()._get_model_inputs_args(batch)
         # use_cache=False kills TWO bugs, both via the same DynamicCache:
         #
-        # (1) v22 ref_lp: Gemma3TextModel.forward:518 creates DynamicCache when
+        # (1) ref_lp mismatch: Gemma3TextModel.forward:518 creates DynamicCache when
         #     `use_cache and past_key_values is None and not self.training`.
         #     ref.eval() → cache; actor (train mode) → none. Gemma3 sliding-window
         #     attn picks different mask based on cache presence → ref_lp=-3.39 vs
@@ -564,8 +564,8 @@ class NLAFSDPActor(FSDPTrainRayActor):
         #     packed detection — masking_utils.py:735 infers block-diag from
         #     position_id resets — but it's gated on `past_key_values is None`.
         #     DynamicCache → detection bypassed → SDPA/eager fall through to full
-        #     causal mask over the pack → seq N attends to seq 1..N-1. Verified
-        #     2026-03-19: eval+default=4.2%
+        #     causal mask over the pack → seq N attends to seq 1..N-1.
+        #     Measured: eval+default=4.2%
         #     L2 drift, eval+use_cache=False=0.6% (→0.0% in fp32, bf16 GEMM-tiling
         #     noise from batch-shape diff). Qwen FA2: varlen from position_ids
         #     directly, never touches this path.
@@ -578,7 +578,7 @@ class NLAFSDPActor(FSDPTrainRayActor):
 
     def _create_ref_model(self, ref_load_path):
         # --nla-ref-on-gpu: UNTESTED since the hook + DynamicCache fixes (both
-        # landed after this was dropped at v12 for the kl=7.14 symptom that
+        # landed after this was dropped for a kl≈7 symptom that
         # turned out to be those bugs). Gives back the ~20s/step CPU swap at
         # ~7.5GB VRAM. Re-validate KL init ≈0 before using in production.
         if not getattr(self.args, "nla_ref_on_gpu", False):
@@ -693,8 +693,8 @@ class NLAFSDPActor(FSDPTrainRayActor):
         # Rightmost True in mask, robust to either padding side.
         # GemmaTokenizerFast defaults to padding_side='left' (mask
         # [0,0,1,1,1]) where the old mask.sum-1 gave n_real-1 instead
-        # of T-1. Qwen defaults right, so it worked by accident. At
-        # v19 Gemma RL this picked the wrong pos for 31/32 samples —
+        # of T-1. Qwen defaults right, so it worked by accident. In an
+        # early Gemma RL run this picked the wrong pos for 31/32 samples —
         # actor chased an artificial length gradient (longer → less
         # padding → less-wrong idx) instead of explanation quality.
         last_idx = mask.cumsum(dim=1).argmax(dim=1)
@@ -873,14 +873,14 @@ class NLAFSDPActor(FSDPTrainRayActor):
                 # RolloutManager writes sample_offset/epoch_id to a SIBLING
                 # rollout/ dir — not inside iter_dir, so gsutil cp -r iter_dir
                 # misses it. Snapshot into iter_dir so resume from GCS restores
-                # data offset (else fresh pod → multi-epoch on first ~128k rows).
+                # data offset (else a fresh machine re-trains the first ~128k rows).
                 rollout_state_dir = Path(self.args.save) / "rollout"
                 if rollout_state_dir.exists():
                     for f in rollout_state_dir.glob("global_dataset_state_dict_*.pt"):
                         shutil.copy(f, f"{iter_dir}/{f.name}")
             # env -u PYTHONPATH: training's PYTHONPATH (Megatron-LM checkout)
-            # leaks into nix gsutil's subprocess → boto's
-            # platform.python_version() chokes on conda-forge sys.version string.
+            # can leak into gsutil's subprocess and break boto's Python-version
+            # parsing under some Python distributions — strip it defensively.
             # Push only — caller handles prune (both backends: daemon thread
             # in save_model, push-then-prune). Chaining prune here previously
             # meant the `ls` readdir hung under async-save bg-write saturation.
