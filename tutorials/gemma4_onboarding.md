@@ -76,7 +76,58 @@ choices are the **big 31B (dense)** or **26B-A4B (MoE)**.
   the only wrinkle. **Current lean for a first contribution.**
 - **31B** — most likely to "just work" (closest to Gemma-3) but heaviest (60×5376).
 
-## 5. Open questions / next decisions (not yet done)
+## 5. Economics — Claude API + RL training (researched 2026-06-15)
+
+### Claude API (data-gen stage 2) — what it does + cost
+- **Where:** `nla/datagen/stage2_api_explain.py` (provider = `AnthropicProvider`). Runs ONLY on the
+  SL subset (av_sft 0.25 + ar_sft 0.25 = **50% of vectors**); the RL 50% skips the API.
+- **Role:** Claude is shown the **source TEXT snippet** (`detokenized_text_truncated`) — NOT the
+  activation vector — and asked for the "2-3 features the LM would use to predict the next token …
+  what it's thinking about where the text ends" (`<analysis>` tags, ~80-100 words). That output
+  becomes the **AV-SFT target** (`response`) AND the **AR-SFT `<text>`**. It bootstraps the
+  supervised stage; RL then refines the AV with no Claude in the loop.
+- **Volumes (explicit in `configs/datagen/gemma3_12b_*.yaml`):** 1k smoke = ~10k vectors / **~5k API
+  calls**; 100k full = ~1M vectors / **~500k API calls**. `positions_per_doc: 10`, `max_tokens: 300`.
+- **Cost (pricing: Sonnet 4.6 $3/$15 per 1M; Haiku 4.5 $1/$5; ~600 in + ~250 out per call):**
+  - 1k smoke on Haiku ≈ **~$10** (fits the $25 budget).
+  - 100k full on Sonnet ≈ **~$2,500–3,000** (~$1,400 with the Batches API, −50%).
+  - Levers: Haiku not Sonnet, Batches API, fewer docs, `cache_from` reuse (same tokenizer only).
+- **Key fact:** Claude never sees the vector — it can't, it only reads the text prefix. So this is a
+  text-derived SFT label, not a vector readout.
+
+### RL loop — architecture, GPUs, cost (from `configs/rl.sh` + `configs/TRAINING_NOTES.md`)
+- **Three simultaneous GPU consumers:** actor (AV, GRPO/FSDP) + critic (AR, MSE — the ONLINE reward
+  model, `reward = −MSE(AR(expl), gold)` via Ray remote) + sglang rollout. Plus a reference model for
+  the KL term (`KL_LOSS_COEF=0.01`; set 0 to drop ref-load on tiny runs). Separate Ray GPU pools.
+- **Not single-GPU.** `rl.sh` defaults `ACTOR_GPUS=8 CRITIC_GPUS=4 ROLLOUT_GPUS=4`; the **released
+  Qwen-7B run was 2 nodes × 8 × H100-80GB = 16 H100s**, ~4,200 rollouts. Env vars let you shrink the
+  pools, but ~2-3 distinct GPUs is the realistic floor (untested territory — repo only tested 2×8).
+- **On-policy only:** synchronous `train.py`, one optimizer step per rollout (128 prompts × 8 =
+  1024 global batch). `train_async.py`/overlap is explicitly "not tested, may hurt." Don't deviate.
+- **Cost estimates (~$2.5/H100-hr):**
+
+  | Stage | Config (repo) | Wall-clock | GPU-h | ~Cost |
+  |---|---|---|---|---|
+  | AV-SFT | 2×H100, 1000 steps @4.97s | ~1.4h | ~2.8 | ~$7 |
+  | AR-SFT | 2×H100, 1000 steps @3s | ~0.8h | ~1.7 | ~$4 |
+  | **Full RL** | **16×H100, ~4200 rollouts @47s** | **~55h** | **~880** | **~$2,200–3,000** |
+
+  90% of each RL step is sglang rollout wait; smaller models (E4B) are proportionally cheaper/faster.
+- **Newcomer reality:** **SFT is the gentle on-ramp** (plain `train.py`, ~2 GPUs, hours, ~$10-20,
+  no Ray-multi-group) — a newcomer CAN do AV-SFT + AR-SFT and see a working rough AV/AR.
+  **Full RL is heavy**: Miles + Ray + sglang-from-source + patches (+ optional Megatron), repeatedly
+  flagged "only config we tested." A **tiny RL smoke** (E4B, ~2-3 GPUs, ~30-100 steps like the repo's
+  LR scans) to learn the dynamics is ~**$15-50** — after surviving the Miles install (a bigger setup
+  gauntlet than the inference one in the skill).
+
+### Bottom line for the Gemma-4 goal
+- **Learnable now (~$25-65 total):** 1k smoke data-gen (~$10 API) → AV-SFT + AR-SFT on a small model
+  (~$15-20 GPU) → optional tiny RL smoke (~$15-50). This teaches the WHOLE pipeline cheaply.
+- **Full contributed checkpoint (12B-class):** ~$2.5-3k GPU + ~$2.5k API ≈ **~$5k and weeks**, on
+  16-GPU infra. Do this only after the smoke stages work and there's real budget.
+- **Staged path stands:** familiarize on the smoke scale first; never commit full-scale upfront.
+
+## 6. Open questions / next decisions (not yet done)
 
 1. **Pick the variant** (E4B vs 26B-A4B vs 31B) — trades cost vs risk vs cleanliness.
 2. **Verify embed-scale** = √d for Gemma-4 (check the Gemma4 embedding class in transformers 5.5+).
