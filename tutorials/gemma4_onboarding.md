@@ -185,6 +185,29 @@ writes the explanation from the TEXT snippet) → `stage3_build.py` (writes the 
 Both are ~2-GPU, ~hours, ~$10-20 each (TRAINING_NOTES). This is the recommended first hands-on stage
 for Gemma-4 before any RL.
 
+### Verification pass (2026-06-16) — train-time specifics + Gemma-4 watch-items
+Re-verified the §6 claims against code; all hold. Four facts that matter for Gemma-4 training:
+
+1. **Train-time injection rides the model's native embedding scaling — NO manual `embed_scale` needed**
+   (unlike inference). `train_actor.py:525` registers a **forward hook on `get_input_embeddings()`**;
+   it fires on the embedding layer's *output*, so for Gemma the normal tokens are already ×√d-scaled by
+   `Gemma3TextScaledWordEmbedding.forward()`, and the activation (normalized to `injection_scale`) is
+   slotted in after. So the √d footgun is an *inference-only* concern. ✓
+2. **`use_cache=False` is forced at train time** (`train_actor.py:544+`) to kill two **Gemma3-specific**
+   bugs: sliding-window attn picking a different mask when a DynamicCache exists (ref vs actor logprob
+   divergence), and thd-packed cross-sequence contamination. Gemma-4 is also sliding-window → this fix
+   is Gemma-relevant; **re-confirm it still applies for `gemma4`** (the code/comments target gemma3).
+3. **PLE is a *train-time* risk too, not just inference.** The injection hook overwrites the **main
+   `embed_tokens`** output at the marker; a PLE model (E4B) adds per-layer embeddings deeper, keyed on
+   the marker's *token ID*, which the overwrite does NOT replace → injected concept diluted at every
+   layer. Reinforces: **prefer a non-PLE Gemma-4 variant (31B dense / 26B-A4B) for a first AV/AR.**
+4. **AR-SFT build is tokenizer-pinned:** `stage3_build.py` tokenizes every row and asserts it ends with
+   the critic suffix (`</text> <summary>`). For Gemma-4, confirm that suffix tokenizes to a stable
+   trailing sequence at the BPE boundary, or the template needs a delimiter (the assert will catch it).
+
+Not yet traced file-by-file: the **RL loop internals** (`reward.py` `nla_rm`, `nla_generate.py`,
+critic_fwd-via-Ray) — §5 has its cost/feasibility, not its mechanics. That's the next mapping if needed.
+
 ## 7. Open questions / next decisions (not yet done)
 
 1. **Pick the variant** (E4B vs 26B-A4B vs 31B) — trades cost vs risk vs cleanliness.
