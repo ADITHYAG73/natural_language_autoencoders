@@ -127,7 +127,65 @@ choices are the **big 31B (dense)** or **26B-A4B (MoE)**.
   16-GPU infra. Do this only after the smoke stages work and there's real budget.
 - **Staged path stands:** familiarize on the smoke scale first; never commit full-scale upfront.
 
-## 6. Open questions / next decisions (not yet done)
+## 6. SFT pipelines — complete path, file-by-file (verified 2026-06-16)
+
+Both SFT stages run through Miles' `train.py` with `--debug-train-only` (NO sglang rollout — this is
+the cheap ~2-GPU on-ramp), `--data-source-path nla.data_source.NLADataSource`, and
+`--custom-actor-cls-path nla.train_actor.NLAFSDPActor`. They differ in prompt shape, what the
+activation is *for*, and the loss.
+
+### Data-gen prerequisite (shared)
+`model_presets.py` → `stage0_extract.py` (raw layer-L activations, positions ≥50) →
+`stage1_split.py` (doc-level: av_sft .25 / ar_sft .25 / rl .50) → `stage2_api_explain.py` (Claude
+writes the explanation from the TEXT snippet) → `stage3_build.py` (writes the per-stage parquet +
+`nla_meta.yaml` sidecar).
+
+### AV-SFT (`configs/actor_sft.sh`)  — "vector → text"
+- **Parquet (Stage 3a):** `prompt` = `list[dict]` messages with the `<INJECT>` marker in user content;
+  `response` = the `<explanation>…</explanation>` (Claude's); `activation_vector` = raw vector.
+- **Flags:** `--loss-type sft_loss` (Miles built-in), `--rollout-function-path nla.rollout.sft_actor.generate_rollout`,
+  `--nla-injection-scale <INJ_SCALE>`, `n_samples_per_prompt 1`. Qwen defaults: batch 256, lr 2e-5 cosine→2e-6.
+- **Runtime:**
+  1. `NLADataSource` (`data_source.py:33`) → `Sample(prompt=messages, metadata={activation_vector, response})`; `<INJECT>`→ sidecar marker char.
+  2. `sft_actor.generate_rollout` (`rollout/sft_actor.py`) → NO generation: appends `response` as assistant turn, tokenizes, builds a **response-only `loss_mask`** (`loss_mask[-response_length:]`), stashes the vector in `multimodal_train_inputs[MM_ACTIVATION_KEY]`.
+  3. `NLAFSDPActor` (`train_actor.py:410` `injects = loss_type in (sft_loss, policy_loss)`) → during forward, **`inject_at_marked_positions`** overwrites the marker token's embedding with the `injection_scale`-normalized activation (input_embeds — *same injection as inference*).
+  4. Loss = **Miles' `sft_loss`** (standard next-token CE, upstream `miles/.../loss.py`), **masked to the response tokens** via the mask in step 2. Backprop updates the **full AV**.
+- **Objective:** given the injected layer-L activation at the marker, reproduce Claude's explanation. → DCP `iter_XXXX` ckpt (→ HF via `tools/convert_fsdp_to_hf.py` for inference; or fed to RL as `ACTOR_SFT_CKPT`).
+
+### AR-SFT (`configs/critic_sft.sh`)  — "text → vector"
+- **Prereq — `nla.scripts.prepare_critic_checkpoint`:** base model → keep blocks 0..K (K+1 layers),
+  **strip lm_head + final LN**, **identity-init `value_head`** (`torch.eye(d)` — critical; random init
+  starts pred_norm ~1/√3 off, per TRAINING_NOTES), `config.num_hidden_layers = K+1`, write
+  `nla_meta.yaml` (token IDs/templates copied from the DATASET sidecar). = `CRITIC_INIT_CKPT`.
+- **Parquet (Stage 3b):** `prompt` is a **complete formatted STRING**:
+  `"Summary of the following text: <text>{explanation}</text> <summary>"`; `activation_vector` = the **gold** target.
+- **Flags:** `--nla-model-is-critic`, `--loss-type custom_loss --custom-loss-function-path nla.loss.nla_critic_loss`,
+  `--rollout-function-path nla.rollout.sft_critic.generate_rollout`.
+- **Runtime:**
+  1. `sft_critic.generate_rollout` (`rollout/sft_critic.py`) → tokenize the string prompt with
+     `add_special_tokens=True` (BOS matters — matches stage0 extractor; without it layer-K means go OOD),
+     **extraction = LAST token** (guaranteed by the fixed `</text> <summary>` suffix — no marker scan;
+     `verify_critic_suffix` checks drift once), stash gold activation. `loss_mask=[]`, `response_length=0`.
+  2. `NLACriticModel` forward → `value_head` output at every position; `nla_critic_loss` (`loss.py:44`)
+     takes the **last-token** prediction and computes **MSE vs the gold activation**, with BOTH L2-normalized
+     to `mse_scale` (direction-only MSE = 2(1−cos); `fve` logged per step).
+- **Objective:** reconstruct the layer-L activation vector from the explanation text. → DCP ckpt (→ HF;
+  this is the `-ar` checkpoint, and the RL `CRITIC_SL_CKPT`).
+
+### AV vs AR at a glance
+| | AV-SFT | AR-SFT |
+|---|---|---|
+| model | full LM | truncated K+1 layers + `value_head`, no lm_head/final-LN |
+| prompt | `list[dict]` w/ marker | complete string `…<text>{expl}</text> <summary>` |
+| activation is… | **injected input** (at marker) | **gold output target** |
+| extraction | — | last token (suffix-anchored) |
+| loss | Miles `sft_loss` (response-masked CE) | `nla_critic_loss` (MSE at last token, dir-only) |
+| learns | vector → explanation text | explanation text → vector |
+
+Both are ~2-GPU, ~hours, ~$10-20 each (TRAINING_NOTES). This is the recommended first hands-on stage
+for Gemma-4 before any RL.
+
+## 7. Open questions / next decisions (not yet done)
 
 1. **Pick the variant** (E4B vs 26B-A4B vs 31B) — trades cost vs risk vs cleanliness.
 2. **Verify embed-scale** = √d for Gemma-4 (check the Gemma4 embedding class in transformers 5.5+).
