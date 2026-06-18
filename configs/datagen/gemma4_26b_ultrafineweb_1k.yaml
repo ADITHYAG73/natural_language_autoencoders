@@ -1,0 +1,54 @@
+# Gemma-4 26B-A4B  1k-doc SMOKE TEST — verify extraction + stage2 API traffic before scaling.
+# ~10k vectors, ~5k API calls (AV+AR SL subset only) ≈ ~$10 on Haiku.
+#
+# Verified 2026-06-18:
+#   - google/gemma-4-26B-A4B-it: UNGATED (Apache-2.0), 51.6 GB → fits a single H100-80GB.
+#   - openbmb/Ultra-FineWeb: UNGATED.  (no HF token needed for either)
+#   - injection char auto-picked + cached: '㈜' id 246566 (injection_token_cache.yaml).
+#   - extraction layer 20 (⅔ of 30), d_model 2816 (from model_presets gemma4_26b).
+#   - data-gen needs NEITHER Miles NOR sglang (decoupled).
+#
+# Run:  python -m nla.datagen.run_pipeline --config configs/datagen/gemma4_26b_ultrafineweb_1k.yaml
+
+model: gemma4_26b
+output_dir: /tmp/nla_gemma4_26b_ultrafineweb_1k
+
+corpus:
+  name: openbmb/Ultra-FineWeb
+  config: null
+  split: en
+  text_column: content
+  start: 0
+  length: 1000
+
+stage0:
+  positions_per_doc: 10
+  chunk_size: 256
+  seed: 42
+  multigpu: false          # single H100 — set true only when sharding stage0 across multiple GPUs
+
+stage1:
+  av_sft_frac: 0.25
+  ar_sft_frac: 0.25
+  rl_frac: 0.50
+  seed: 42
+
+stage2:
+  provider_cls: nla.datagen.providers.AnthropicProvider
+  provider_kwargs:
+    # Haiku for the smoke — ~$10 for 1k (fits the ~$23 budget). Sonnet would be ~5x (over budget).
+    model: claude-haiku-4-5-20251001
+    max_tokens: 300
+    temperature: 1.0
+    concurrency: 10
+  chunk_size: 512
+  # No cache_from — first Gemma-4 run, no prior *_explained.parquet to reuse.
+
+stage3:
+  keep_debug_metadata: true
+
+shuffle:
+  enabled: true
+  seed: 42
+
+storage_cls: nla.datagen.storage.LocalStorage

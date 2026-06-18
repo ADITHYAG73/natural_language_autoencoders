@@ -65,6 +65,20 @@ MODELS: dict[str, ModelPreset] = {
         turn_marker="<start_of_turn>",
         accepts_system_role=False,
     ),
+    # Gemma-4 26B-A4B (MoE, 4B active). Non-PLE → injection path matches Gemma-3/dense.
+    # Values verified 2026-06-18 against google/gemma-4-26B-A4B-it (config + tokenizer):
+    #   - turn_marker is "<|turn>" — Gemma-4 CHANGED from Gemma-3's "<start_of_turn>".
+    #   - accepts_system_role=True — Gemma-4 accepts a system turn (Gemma-3 did NOT).
+    #   - NOTE: Gemma-4-it chat template adds a "<|channel>thought<channel|>" reasoning channel
+    #     after the model turn — must be handled when building the AV prompt template.
+    "gemma4_26b": ModelPreset(
+        hf_name="google/gemma-4-26B-A4B-it",
+        num_layers=30,
+        d_model=2816,
+        extractor_kwargs={"batch_size": 4, "max_length": 4096, "device_map": "cuda:0"},
+        turn_marker="<|turn>",
+        accepts_system_role=True,
+    ),
     "llama70b": ModelPreset(
         hf_name="meta-llama/Llama-3.3-70B-Instruct",
         num_layers=80,

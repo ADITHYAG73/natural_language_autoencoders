@@ -208,7 +208,46 @@ Re-verified the §6 claims against code; all hold. Four facts that matter for Ge
 Not yet traced file-by-file: the **RL loop internals** (`reward.py` `nla_rm`, `nla_generate.py`,
 critic_fwd-via-Ray) — §5 has its cost/feasibility, not its mechanics. That's the next mapping if needed.
 
-## 7. Open questions / next decisions (not yet done)
+## 7. Smoke data-gen — READY TO RUN (gemma4_26b, prepped 2026-06-18)
+
+Variant **locked: 26B-A4B**. Config + preset + injection char all committed & verified. Evening recipe:
+
+**Provision:** H100-80GB (Hopper → none of the Blackwell/sglang hassle), **≥100 GB disk**.
+
+**Env (uv — light; NO Miles, NO sglang, data-gen is decoupled):**
+```bash
+uv venv .venv && source .venv/bin/activate
+uv pip install "transformers>=5.5" torch pyarrow datasets anthropic accelerate \
+               numpy pyyaml orjson safetensors huggingface_hub
+```
+**Exports:**
+```bash
+export HF_HOME=/workspace/hf
+export HF_HUB_DOWNLOAD_TIMEOUT=60
+export ANTHROPIC_API_KEY=...      # ~$23 available; smoke uses ~$10 on Haiku
+```
+**Run (all 4 stages):**
+```bash
+python -m nla.datagen.run_pipeline --config configs/datagen/gemma4_26b_ultrafineweb_1k.yaml
+```
+
+**Verified facts baked in (HF API + repo, 2026-06-18):**
+- `google/gemma-4-26B-A4B-it`: **UNGATED**, **51.6 GB** (2 safetensors) → fits H100-80GB; no HF token.
+- `openbmb/Ultra-FineWeb`: **UNGATED**.
+- injection char **`㈜` (id 246566)** auto-picked + cached in `injection_token_cache.yaml`.
+- extraction **layer 20** (⅔ of 30), d_model 2816; Haiku smoke ≈ **$10**.
+
+**Runtime watch-items:** `nvidia-smi` VRAM (51.6 GB model + small vision tower + stage0 batch; lower
+`extractor_kwargs.batch_size` from 4 if OOM). **GPU only needed for stage 0** (~15–30 min); stages 1–3
+are CPU/API (stage 2 = Claude, no GPU). Output → `/tmp/nla_gemma4_26b_ultrafineweb_1k/{av_sft,ar_sft,rl}.parquet` + sidecar.
+
+**Batch API:** repo's `AnthropicProvider` is **live concurrent** (`messages.create`), NOT the 50%-off
+Batches API. Not worth building for the $10 smoke; worth a custom `--provider-cls` for the full run.
+
+**Still ahead (not blockers for smoke):** Miles install (for SFT/RL), and the Gemma-4
+`<|channel>thought<channel|>` handling in the AV prompt (training/inference-time, not data-gen).
+
+## 8. Open questions / next decisions (not yet done)
 
 1. **Pick the variant** (E4B vs 26B-A4B vs 31B) — trades cost vs risk vs cleanliness.
 2. **Verify embed-scale** = √d for Gemma-4 (check the Gemma4 embedding class in transformers 5.5+).
