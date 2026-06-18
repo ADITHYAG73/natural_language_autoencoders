@@ -221,11 +221,13 @@ class AnthropicBatchProvider(CompletionProvider):
                     out[idx] = text
                     n_ok += 1
             elif rtype == "errored":
-                # be defensive about the error nesting (don't assume the exact shape)
+                # Official Batches API error shape is result.result.error.error.type
+                # (double-nested; verified against platform.claude.com batch-processing docs).
+                # getattr fallback stays robust if a category ever surfaces a flatter shape.
                 err = result.result.error
                 et = getattr(getattr(err, "error", None), "type", None) or getattr(err, "type", "unknown")
                 err_types[et] = err_types.get(et, 0) + 1
-                n_errored += 1          # left as None → row dropped
+                n_errored += 1          # left as None → row dropped (errored is NOT billed)
             else:                        # canceled / expired
                 n_other += 1            # left as None → row dropped
         if n_refused or n_errored or n_other:
