@@ -241,8 +241,10 @@ python -m nla.datagen.run_pipeline --config configs/datagen/gemma4_26b_ultrafine
 `extractor_kwargs.batch_size` from 4 if OOM). **GPU only needed for stage 0** (~15–30 min); stages 1–3
 are CPU/API (stage 2 = Claude, no GPU). Output → `/tmp/nla_gemma4_26b_ultrafineweb_1k/{av_sft,ar_sft,rl}.parquet` + sidecar.
 
-**Batch API:** repo's `AnthropicProvider` is **live concurrent** (`messages.create`), NOT the 50%-off
-Batches API. Not worth building for the $10 smoke; worth a custom `--provider-cls` for the full run.
+**Batch API (50% off):** now BUILT — `nla.datagen.providers.AnthropicBatchProvider` (Batches API,
+offline-verified). Switch by uncommenting the batch block in the config's `stage2` (provider_cls +
+bump `chunk_size` to ~8192 so all SL prompts are one batch). Trade-off: ~$5 not ~$10, but slower
+(minutes→≤24h) and big chunks lose per-chunk crash recovery. Live provider is the default; pick per run.
 
 **Still ahead (not blockers for smoke):** Miles install (for SFT/RL), and the Gemma-4
 `<|channel>thought<channel|>` handling in the AV prompt (training/inference-time, not data-gen).

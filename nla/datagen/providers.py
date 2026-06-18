@@ -11,9 +11,12 @@ Swap via `--provider-cls my.module.MyProvider` at stage2 invocation.
 """
 
 import asyncio
+import time
 from abc import ABC, abstractmethod
 
 import anthropic
+from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+from anthropic.types.messages.batch_create_params import Request
 
 
 class CompletionProvider(ABC):
@@ -126,4 +129,106 @@ class AnthropicProvider(CompletionProvider):
                 raise AssertionError(f"gather returned unexpected type at [{i}]: {type(r).__name__}")
         if n_failed or n_refused:
             print(f"  [AnthropicProvider] dropped {n_refused} refused + {n_failed} retry-exhausted of {len(prompts)}")
+        return out
+
+
+def _message_to_text(msg: anthropic.types.Message) -> str | None:
+    """Shared: Messages response -> explanation text (or None). Mirrors
+    AnthropicProvider._one's extraction so live + batch behave identically:
+    refusal -> None; otherwise require a single non-empty text block."""
+    if msg.stop_reason == "refusal":
+        return None
+    assert msg.stop_reason in ("end_turn", "max_tokens"), (
+        f"unexpected stop_reason={msg.stop_reason!r} (want end_turn/max_tokens/refusal)"
+    )
+    assert len(msg.content) == 1 and msg.content[0].type == "text", (
+        f"expected single text block, got {[b.type for b in msg.content]}"
+    )
+    text = msg.content[0].text.strip()
+    assert text, "empty completion — refusing to emit blank explanation"
+    return text
+
+
+class AnthropicBatchProvider(CompletionProvider):
+    """Batches API provider — ~50% cheaper than live calls; for non-latency-sensitive datagen.
+
+    Same complete() contract as AnthropicProvider (prompts[i] -> completion[i] or None),
+    but submits the whole list as ONE Message Batch, polls until it ends, and maps results
+    back by custom_id. Trade-off: ~50% cost saving vs higher latency (minutes, up to 24h) —
+    fine for stage 2, which is not latency-sensitive.
+
+    Use:  --provider-cls nla.datagen.providers.AnthropicBatchProvider
+
+    NOTE on chunking: stage 2 calls complete() once per chunk (stage2.chunk_size, default 512),
+    so each chunk = one batch. A batch holds up to 100k requests, so for batch mode set a LARGE
+    stage2.chunk_size (e.g. 8192+) → fewer batches, fewer polls. (Trade-off: larger chunks lose
+    stage2's per-chunk crash-recovery granularity.)
+
+    Errored / expired / canceled results degrade to None (row dropped), same as the live
+    provider's gave-up signal; a breakdown is logged so systematic failures are visible.
+    """
+
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-6",
+        max_tokens: int = 300,
+        temperature: float = 1.0,
+        poll_interval: float = 30.0,
+        max_retries: int = 10,
+    ):
+        self.client = anthropic.Anthropic(max_retries=max_retries)
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.poll_interval = poll_interval
+
+    def complete(self, prompts: list[str]) -> list[str | None]:
+        if not prompts:
+            return []
+        requests = [
+            Request(
+                custom_id=f"r{i}",
+                params=MessageCreateParamsNonStreaming(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    messages=[{"role": "user", "content": p}],
+                ),
+            )
+            for i, p in enumerate(prompts)
+        ]
+        batch = self.client.messages.batches.create(requests=requests)
+        print(f"  [AnthropicBatchProvider] submitted batch {batch.id} "
+              f"({len(prompts)} requests, 50%-off); polling every {self.poll_interval:.0f}s…")
+
+        while True:
+            b = self.client.messages.batches.retrieve(batch.id)
+            if b.processing_status == "ended":
+                break
+            time.sleep(self.poll_interval)
+
+        out: list[str | None] = [None] * len(prompts)
+        n_ok = n_refused = n_errored = n_other = 0
+        err_types: dict[str, int] = {}
+        for result in self.client.messages.batches.results(batch.id):
+            idx = int(result.custom_id[1:])  # strip the "r" prefix
+            rtype = result.result.type
+            if rtype == "succeeded":
+                text = _message_to_text(result.result.message)
+                if text is None:
+                    n_refused += 1
+                else:
+                    out[idx] = text
+                    n_ok += 1
+            elif rtype == "errored":
+                # be defensive about the error nesting (don't assume the exact shape)
+                err = result.result.error
+                et = getattr(getattr(err, "error", None), "type", None) or getattr(err, "type", "unknown")
+                err_types[et] = err_types.get(et, 0) + 1
+                n_errored += 1          # left as None → row dropped
+            else:                        # canceled / expired
+                n_other += 1            # left as None → row dropped
+        if n_refused or n_errored or n_other:
+            print(f"  [AnthropicBatchProvider] {n_ok} ok | dropped {n_refused} refused, "
+                  f"{n_errored} errored {err_types or ''}, {n_other} canceled/expired of {len(prompts)}")
         return out

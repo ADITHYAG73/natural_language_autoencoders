@@ -43,6 +43,13 @@ stage2:
     concurrency: 10
   chunk_size: 512
   # No cache_from — first Gemma-4 run, no prior *_explained.parquet to reuse.
+  #
+  # --- 50%-off BATCH alternative (cheaper, but slower: minutes→≤24h) ---
+  # Swap the two lines above for these to use the Batches API provider:
+  #   provider_cls: nla.datagen.providers.AnthropicBatchProvider
+  #   provider_kwargs: {model: claude-haiku-4-5-20251001, max_tokens: 300, temperature: 1.0, poll_interval: 30}
+  #   chunk_size: 8192     # large → all SL prompts in ONE batch (limit 100k/batch), one poll
+  # (Trade-off: ~$5 not ~$10, but a big chunk loses stage2's per-chunk crash-recovery granularity.)
 
 stage3:
   keep_debug_metadata: true
