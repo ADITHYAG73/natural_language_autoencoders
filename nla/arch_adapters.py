@@ -58,26 +58,35 @@ def resolve_text_model(model: Any) -> Any:
     Qwen/Llama/Mistral have no .language_model → pass through unchanged
     (already CausalLM-shaped).
     """
-    for attr in _WRAPPER_MODEL_ATTRS:
-        nested = getattr(model, attr, None)
-        if nested is None:
-            continue
-        if hasattr(nested, "lm_head"):
-            return nested  # already CausalLM-shaped
-        # Bare TextModel — wrap in CausalLM so keys roundtrip. meta device
-        # avoids materializing a throwaway 12B random model.
-        with torch.device("meta"):
-            wrapper = AutoModelForCausalLM.from_config(nested.config)
-        wrapper.model = nested  # transplant pretrained weights
-        # lm_head is on meta. Critic caller strips it to Identity (harmless).
-        # Actor caller (train_actor.NLATextOnlyCausalLM) needs a real one to
-        # generate — Gemma ties it to embed_tokens, so tie_weights() points
-        # lm_head.weight at the real embedding tensor (no extra alloc).
-        # Non-tied archs would need the caller to load lm_head separately;
-        # cross that bridge when we hit one.
-        if getattr(nested.config, "tie_word_embeddings", False):
-            wrapper.tie_weights()
-        return wrapper
+    # transformers <5 exposed `.language_model` on the top-level
+    # ForConditionalGeneration; transformers 5.x nests it under `.model`
+    # (e.g. Gemma4ForConditionalGeneration.model.language_model → Gemma4TextModel).
+    # Check both so the unwrap is robust across versions.
+    containers = [model]
+    inner = getattr(model, "model", None)
+    if inner is not None:
+        containers.append(inner)
+    for container in containers:
+        for attr in _WRAPPER_MODEL_ATTRS:
+            nested = getattr(container, attr, None)
+            if nested is None:
+                continue
+            if hasattr(nested, "lm_head"):
+                return nested  # already CausalLM-shaped
+            # Bare TextModel — wrap in CausalLM so keys roundtrip. meta device
+            # avoids materializing a throwaway 12B random model.
+            with torch.device("meta"):
+                wrapper = AutoModelForCausalLM.from_config(nested.config)
+            wrapper.model = nested  # transplant pretrained weights
+            # lm_head is on meta. Critic caller strips it to Identity (harmless).
+            # Actor caller (train_actor.NLATextOnlyCausalLM) needs a real one to
+            # generate — Gemma ties it to embed_tokens, so tie_weights() points
+            # lm_head.weight at the real embedding tensor (no extra alloc).
+            # Non-tied archs would need the caller to load lm_head separately;
+            # cross that bridge when we hit one.
+            if getattr(nested.config, "tie_word_embeddings", False):
+                wrapper.tie_weights()
+            return wrapper
     return model
 
 
