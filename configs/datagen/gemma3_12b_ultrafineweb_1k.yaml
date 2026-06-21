@@ -1,5 +1,5 @@
 # Gemma-3-12B 1k-doc SMOKE TEST — verify extraction + stage2 API traffic
-# before committing to a 100k run. ~10k vectors, ~5k API calls (AO+AR only).
+# before committing to a 100k run. ~10k vectors, ~5k API calls (AV+AR only).
 #
 # Prereq: huggingface-cli login (gemma-3 is a gated repo)
 # Run:    python -m nla.datagen.run_pipeline --config configs/datagen/gemma3_12b_ultrafineweb_1k.yaml

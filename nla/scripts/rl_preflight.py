@@ -60,7 +60,7 @@ def check_critic_paths_and_scale(critic_hf_dir: str, tol: float) -> None:
     cfg = load_nla_config(critic_hf_dir, tok)
     d_model, mse_scale = cfg.d_model, cfg.mse_scale
 
-    # v21's critic was prepared with --num-layers 33 when extraction
+    # Real failure mode: a critic prepared with --num-layers 33 when extraction
     # layer_index=32 → num_hidden_layers=34 (one too many). Head had to
     # approximately undo block 33's transform to hit the gold at block-32
     # output. SFT-FVE ceiling dropped to ~0.32. --num-layers must equal the

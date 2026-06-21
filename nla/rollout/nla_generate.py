@@ -54,11 +54,11 @@ _PREFILL_LEAK_PINGED = False
 # bf16-base64: ~12MB JSON body → ~2.8MB string. sglang casts to bf16 on
 # receipt anyway (schedule_batch hunk in nla_input_embeds.patch), so bf16
 # transport is bit-exact end-to-end. Requires nla_input_embeds_b64.patch on
-# the engine. v12: 4096 reqs × 12MB through one router subprocess leaks
+# the engine. Observed: 4096 reqs × 12MB through one router subprocess leaks
 # ~65GB/step; smaller bodies = less buffer pressure regardless of root cause.
 _BF16_B64_EMBEDS = os.environ.get("NLA_BF16_B64_EMBEDS") == "1"
 
-# v12: sglang_router_rs (rust .abi3.so, forked from RolloutManager, 210 tokio
+# sglang_router_rs (rust .abi3.so, forked from RolloutManager, 210 tokio
 # threads) leaks ~142GB/step Private_Dirty. Not history_backend (=none), not
 # cache_aware tree (round_robin same), not retries — the rust relay path itself
 # never frees per-request allocs. Can't fix without rebuilding rust. Bypass:
@@ -298,10 +298,10 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]) -> Sam
     # internal; tokenizer never knows. Stale pre-retract + fresh post-restart =
     # 200-263 entries for a 150-tok gen. Qwen/12b never retract (KV headroom).
     #
-    # Dropping the sample (v9/v10) gives a 0-response-length hole in the batch
+    # Dropping the sample gives a 0-response-length hole in the batch
     # → NCCL timeout at thd packing. Extraction-miss FAILED samples pass miles
     # fine because update_sample_from_response fills real-shaped fields; ours
-    # don't. Letting it through unchanged = v5 behavior (~0.1% of gradient on
+    # don't. Letting it through unchanged is tolerable (~0.1% of gradient on
     # stale decode logprobs, learned OK). Warn so we track the rate; optionally
     # set NLA_PINGME_CMD=<executable> for a slack/page on first occurrence.
     # Long-term fix: avoid retraction (--sglang-mem-fraction-static) or a
@@ -356,7 +356,7 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]) -> Sam
     # (_swap_rollout_to_critic_tokens filters on MM_CRITIC_TOKENS_KEY absent)
     # AND reward.py:_prep_batch gives it rwd=0 → adv≈-2.5. Without this,
     # trunc@150 adv=+1.2 vs completed adv=+0.02 → length drift +0.30 tok/step
-    # → FVE peaks@33 then drops (v19 audit, 2026-03-18).
+    # → FVE peaks after ~30 steps then drops (observed in an early RL run).
     if explanation is None or sample.status == Sample.Status.TRUNCATED:
         sample.status = Sample.Status.FAILED
         return sample

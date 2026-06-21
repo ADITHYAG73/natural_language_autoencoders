@@ -4,7 +4,7 @@ When a regeneration uses the SAME (corpus, seed, tokenizer) as a prior run,
 stage1's raw parquet contains the identical set of (doc_id, position) pairs.
 A prior run's shuf parquet has response/prompt for those pairs. Join on the
 key, unwrap the explanation, append — no text hashing, no API calls, no per-
-chunk write overhead. Qwen 100k v2: 99.57% match, ~1min vs ~49min for
+chunk write overhead. Measured on a Qwen 100k regeneration: 99.57% match, ~1min vs ~49min for
 cache-hit stage2 (which was bottlenecked on 489 row-group writes).
 
 This is stage2's complement, not its replacement:
@@ -63,7 +63,7 @@ def main() -> None:
 
     print(f"reading prior shuf from {args.prior_shuf}...")
     prior_pf = pq.ParquetFile(prior_storage.open_read(args.prior_shuf))
-    # stage3's AO writes `response`, AR writes `prompt` — presence discriminates.
+    # stage3's AV writes `response`, AR writes `prompt` — presence discriminates.
     is_ao = "response" in prior_pf.schema_arrow.names
     wrapped_col = "response" if is_ao else "prompt"
     print(f"  detected {'AV-SFT (response col)' if is_ao else 'AR-SFT (prompt col, critic template unwrap)'}")

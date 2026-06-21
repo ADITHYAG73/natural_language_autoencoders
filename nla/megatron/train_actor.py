@@ -295,7 +295,7 @@ class NLAMegatronActor(MegatronTrainRayActor):
         _patch_checkpoint_args_validation()
         rollout_id = super().init(args, role, with_ref)
         # Constant lr only. Checkpoint-loaded scheduler state can carry stale
-        # decay_iters/num_steps that decay lr to 0 (v11+v12: critic_lr=0 for
+        # decay_iters/num_steps that decay lr to 0 (observed: critic_lr=0 for
         # ~450 steps). args.lr is already swapped to critic_lr at actor.py:92
         # for the critic role, so this covers both. Neuter the scheduler so its
         # step() is a no-op, then set the optimizer's live lr.
@@ -827,7 +827,7 @@ class NLAMegatronActor(MegatronTrainRayActor):
         # Barrier IMMEDIATELY after super() — any NFS op below (tracker read,
         # readdir, ls) hangs ~6-27min while the 660GB bg-write super() just
         # spawned saturates the server. With barrier-after, rank-0's hang
-        # deadlocks the other 23 ranks. v11: this was the ~33min/save stall.
+        # deadlocks the other 23 ranks. This was a ~33min/save stall in practice.
         dist.barrier()
         if mpu.get_data_parallel_rank() == 0 and mpu.get_tensor_model_parallel_rank() == 0 and mpu.is_pipeline_first_stage():
             keep_n = max(2, int(os.environ.get("NLA_KEEP_LOCAL", "2")))
@@ -860,11 +860,13 @@ class NLAMegatronActor(MegatronTrainRayActor):
             trained_on=[self.args.prompt_data] if self.args.prompt_data else [],
             parent_checkpoints=[self.args.hf_checkpoint],
             created_by="nla.megatron.train_actor.NLAMegatronActor",
+            # Same training_args keys as NLAFSDPActor._write_sidecar — the
+            # sidecar schema must not depend on the training backend. (num_layers
+            # is already in the checkpoint's config.json; don't duplicate it here.)
             training_args={
                 "rollout_id": rollout_id,
                 "lr": self.args.lr,
                 "loss_type": self.args.loss_type,
                 "global_batch_size": self.args.global_batch_size,
-                "num_layers": self.args.num_layers,
             },
         )

@@ -212,7 +212,7 @@ The only assert-worthy case is at startup: first batch, 100% extraction failure 
 
 ## 4. Training Modes (three separate `train.py` invocations)
 
-### 4.1 Actor SFT (AO / decoder)
+### 4.1 Actor SFT (AV / decoder)
 
 **Data:** AV-SFT parquet: `prompt`, `response`, `activation_vector`. Token IDs (injection + neighbors) come from the sidecar, not per-row.
 

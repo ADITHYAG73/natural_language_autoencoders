@@ -39,7 +39,7 @@ class ModelPreset:
 # estimator which, on residual 1-2GB from prior contexts, decides to CPU-
 # offload → meta-tensor crash at forward ("Some parameters are on the meta
 # device"). Explicit "cuda:0" bypasses the estimator — fail loud with honest
-# CUDA OOM instead of silent offload. Observed 2026-03-13 on 27b.
+# CUDA OOM instead of silent offload. Observed on the 27b extraction run.
 MODELS: dict[str, ModelPreset] = {
     "qwen7b": ModelPreset(
         hf_name="Qwen/Qwen2.5-7B-Instruct",
