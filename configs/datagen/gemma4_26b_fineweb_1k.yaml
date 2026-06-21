@@ -1,0 +1,57 @@
+# Gemma-4 26B-A4B over fineweb (1k docs) — the corrected real-run config.
+#
+# WHY fineweb sample-10BT (not Ultra-FineWeb): stage0 loads non-streaming + .select(), so it
+# downloads the WHOLE split first. openbmb/Ultra-FineWeb "en" is ~2.6 TB → infeasible. The authors
+# document this (qwen7b_ultrafineweb_100k.yaml header) and recommend fineweb sample-10BT (~24 GB)
+# for a fresh reproduction. 24 GB corpus + 51.6 GB model ≈ ~76 GB → fits a 100 GB pod.
+#
+# Scale: 1k docs × 10 positions = ~10k vectors; SL subset ~5k API calls ≈ ~$10 on Haiku.
+#   This is LEARNING scale (enough to run AV-SFT and watch it learn) — NOT a production checkpoint
+#   (the released models used ~100k docs). Bump corpus.length for more data (and more $/compute).
+#
+# Run (on a 100 GB-disk pod, GPU for stage0; override output_dir to /workspace/...):
+#   python -m nla.datagen.run_pipeline --config configs/datagen/gemma4_26b_fineweb_1k.yaml \
+#       --override output_dir=/workspace/nla_gemma4_26b_fineweb_1k
+
+model: gemma4_26b
+output_dir: /tmp/nla_gemma4_26b_fineweb_1k
+
+corpus:
+  name: HuggingFaceFW/fineweb
+  config: sample-10BT
+  split: train
+  text_column: text
+  start: 0
+  length: 1000
+
+stage0:
+  positions_per_doc: 10
+  chunk_size: 256
+  seed: 42
+  multigpu: false          # single GPU (set true only when sharding stage0 across multiple GPUs)
+  # extractor_kwargs omitted → uses the gemma4_26b preset's {batch_size:4, max_length:4096, device_map:"cuda:0"}
+
+stage1:
+  av_sft_frac: 0.25
+  ar_sft_frac: 0.25
+  rl_frac: 0.50
+  seed: 42
+
+stage2:
+  provider_cls: nla.datagen.providers.AnthropicProvider
+  provider_kwargs:
+    model: claude-haiku-4-5-20251001   # Haiku for budget; ~$10 for 1k. Sonnet would be ~5x.
+    max_tokens: 300
+    temperature: 1.0
+    concurrency: 10
+  chunk_size: 512
+  # 50%-off batch alternative available — see gemma4_26b_ultrafineweb_1k.yaml's stage2 comment.
+
+stage3:
+  keep_debug_metadata: true
+
+shuffle:
+  enabled: true
+  seed: 42
+
+storage_cls: nla.datagen.storage.LocalStorage
